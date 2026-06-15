@@ -116,12 +116,14 @@ _ENV_ASSIGN_RE = re.compile(
 
 # JSON field patterns: "apiKey": "value", "token": "value", etc.
 _JSON_KEY_NAMES = r"(?:api_?key|access_?token|refresh_?token|auth_?token|authorization|credential|key_material|secret_value|raw_secret|secret_input|password|passwd|secret|bearer|token)"
-# Allow a key prefix so longer keys match too (NOTION_API_KEY, X_AUTH_TOKEN,
-# client_secret, …), mirroring _ENV_ASSIGN_RE's prefix tolerance. The secret
-# word is matched at the END of the key, so non-secret keys like "tokenizer"
-# or "max_tokens" (value usually unquoted anyway) are not masked.
+# Allow a multi-segment key prefix so longer keys match too (NOTION_API_KEY,
+# NOTION_INTERNAL_API_KEY, X_INTERNAL_AUTH_TOKEN, client_secret, …), mirroring
+# _ENV_ASSIGN_RE's prefix tolerance. The prefix char class includes '_' to span
+# multiple segments; the secret word is anchored at the END of the key (right
+# before the closing quote), so non-secret keys like "tokenizer",
+# "max_tokens", or "max_completion_tokens" are not masked.
 _JSON_FIELD_RE = re.compile(
-    rf'("[A-Za-z0-9]*_?{_JSON_KEY_NAMES}")\s*:\s*"([^"]+)"',
+    rf'("[A-Za-z0-9_]*{_JSON_KEY_NAMES}")\s*:\s*"([^"]+)"',
     re.IGNORECASE,
 )
 

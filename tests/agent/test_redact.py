@@ -495,6 +495,15 @@ class TestPrefixedJsonKeys:
         result = redact_sensitive_text(f'{{"NOTION_API_KEY":"{self.OPAQUE}"}}', force=True)
         assert self.OPAQUE not in result
 
+    def test_multi_segment_prefixed_json_key_redacted(self):
+        # Multi-segment prefix (more than one underscore-separated segment)
+        result = redact_sensitive_text(f'{{"NOTION_INTERNAL_API_KEY":"{self.OPAQUE}"}}', force=True)
+        assert self.OPAQUE not in result
+
+    def test_max_completion_tokens_not_masked(self):
+        text = '{"max_completion_tokens": 100}'
+        assert redact_sensitive_text(text, force=True) == text
+
     def test_prefixed_json_auth_token_redacted(self):
         result = redact_sensitive_text(f'{{"X_AUTH_TOKEN": "{self.OPAQUE}"}}', force=True)
         assert self.OPAQUE not in result
