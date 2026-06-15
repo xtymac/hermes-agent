@@ -4,7 +4,7 @@ import logging
 
 import pytest
 
-from agent.redact import redact_sensitive_text, RedactingFormatter
+from agent.redact import redact_sensitive_text, redact_object, RedactingFormatter
 
 
 @pytest.fixture(autouse=True)
@@ -482,3 +482,61 @@ class TestXaiToken:
     def test_prefix_visible_in_masked_output(self):
         result = redact_sensitive_text(self.KEY, force=True)
         assert result.startswith("xai-AB")
+
+
+class TestPrefixedJsonKeys:
+    """Broadened JSON-field matching: a secret word may be suffixed onto a
+    longer key (NOTION_API_KEY, X_AUTH_TOKEN, client_secret), and the value
+    has no recognizable prefix."""
+
+    OPAQUE = "plainsecretvalue123456789"
+
+    def test_prefixed_json_api_key_redacted(self):
+        result = redact_sensitive_text(f'{{"NOTION_API_KEY":"{self.OPAQUE}"}}', force=True)
+        assert self.OPAQUE not in result
+
+    def test_prefixed_json_auth_token_redacted(self):
+        result = redact_sensitive_text(f'{{"X_AUTH_TOKEN": "{self.OPAQUE}"}}', force=True)
+        assert self.OPAQUE not in result
+
+    def test_client_secret_redacted(self):
+        result = redact_sensitive_text(f'{{"client_secret": "{self.OPAQUE}"}}', force=True)
+        assert self.OPAQUE not in result
+
+    def test_unquoted_value_unchanged(self):
+        # numeric/unquoted values must not be touched
+        assert redact_sensitive_text('{"max_tokens": 4096}', force=True) == '{"max_tokens": 4096}'
+
+    def test_tokenizer_key_not_masked(self):
+        # "tokenizer" contains "token" but the secret word isn't at the key end
+        text = '{"tokenizer": "gpt2-base"}'
+        assert redact_sensitive_text(text, force=True) == text
+
+
+class TestRedactObject:
+    """Structural redaction used by request-dump persistence."""
+
+    OPAQUE = "plainsecretvalue123456789"
+
+    def test_value_under_sensitive_key_masked(self):
+        # opaque value (no detectable prefix) under a known-sensitive key
+        out = redact_object({"api_key": self.OPAQUE})
+        assert self.OPAQUE not in out["api_key"]
+
+    def test_json_shaped_secret_in_string_masked_before_escaping(self):
+        # The reviewer's case: a JSON blob embedded inside a prompt STRING.
+        # Redacting the structure scrubs it before json.dumps escapes quotes.
+        import json
+        payload = {"messages": [{"role": "system",
+                                 "content": f'cfg {{"NOTION_API_KEY":"{self.OPAQUE}"}} end'}]}
+        blob = json.dumps(redact_object(payload), ensure_ascii=False)
+        assert self.OPAQUE not in blob
+
+    def test_non_secret_scalars_preserved(self):
+        out = redact_object({"max_tokens": 4096, "model": "gpt-4", "stream": True})
+        assert out == {"max_tokens": 4096, "model": "gpt-4", "stream": True}
+
+    def test_nested_lists_recurse(self):
+        out = redact_object({"tools": [{"token": self.OPAQUE}, {"name": "ok"}]})
+        assert self.OPAQUE not in out["tools"][0]["token"]
+        assert out["tools"][1]["name"] == "ok"

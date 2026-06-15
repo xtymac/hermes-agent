@@ -10,6 +10,7 @@ the first 6 and last 4 characters for debuggability.
 import logging
 import os
 import re
+from typing import Any, Dict
 
 logger = logging.getLogger(__name__)
 
@@ -114,9 +115,22 @@ _ENV_ASSIGN_RE = re.compile(
 )
 
 # JSON field patterns: "apiKey": "value", "token": "value", etc.
-_JSON_KEY_NAMES = r"(?:api_?[Kk]ey|token|secret|password|access_token|refresh_token|auth_token|bearer|secret_value|raw_secret|secret_input|key_material)"
+_JSON_KEY_NAMES = r"(?:api_?key|access_?token|refresh_?token|auth_?token|authorization|credential|key_material|secret_value|raw_secret|secret_input|password|passwd|secret|bearer|token)"
+# Allow a key prefix so longer keys match too (NOTION_API_KEY, X_AUTH_TOKEN,
+# client_secret, …), mirroring _ENV_ASSIGN_RE's prefix tolerance. The secret
+# word is matched at the END of the key, so non-secret keys like "tokenizer"
+# or "max_tokens" (value usually unquoted anyway) are not masked.
 _JSON_FIELD_RE = re.compile(
-    rf'("{_JSON_KEY_NAMES}")\s*:\s*"([^"]+)"',
+    rf'("[A-Za-z0-9]*_?{_JSON_KEY_NAMES}")\s*:\s*"([^"]+)"',
+    re.IGNORECASE,
+)
+
+# Dict keys whose VALUE should be masked wholesale by redact_object(),
+# regardless of the value's shape — catches secrets with no detectable prefix
+# (e.g. an opaque integration token) stored under a known-sensitive key.
+_SENSITIVE_KEY_RE = re.compile(
+    r"(?:api_?key|access_?token|refresh_?token|auth_?token|authorization|credential|"
+    r"key_material|secret_value|raw_secret|secret_input|password|passwd|secret|bearer|token)$",
     re.IGNORECASE,
 )
 
@@ -426,6 +440,37 @@ def redact_sensitive_text(text: str, *, force: bool = False, code_file: bool = F
         text = _SIGNAL_PHONE_RE.sub(_redact_phone, text)
 
     return text
+
+
+def redact_object(obj: Any, *, force: bool = True) -> Any:
+    """Recursively redact a JSON-serializable structure before serialization.
+
+    Use this instead of redacting the serialized ``json.dumps(...)`` string:
+    redacting the structure scrubs a JSON-shaped secret embedded inside a
+    string value *before* ``json.dumps`` escapes its inner quotes (escaped
+    ``\\"`` defeats the text regexes), and masks a value under a known
+    sensitive key even when the value itself has no recognizable prefix.
+
+    - ``dict``: a value whose key matches :data:`_SENSITIVE_KEY_RE` is masked
+      wholesale via :func:`mask_secret`; other values recurse.
+    - ``list``/``tuple``: each element recurses.
+    - ``str``: passed through :func:`redact_sensitive_text` (catches prefixed
+      tokens, ``KEY=value`` assignments, and ``"key": "value"`` JSON in text).
+    - other scalars (int/float/bool/None): returned unchanged.
+    """
+    if isinstance(obj, dict):
+        out: Dict[Any, Any] = {}
+        for k, v in obj.items():
+            if isinstance(k, str) and _SENSITIVE_KEY_RE.search(k) and isinstance(v, (str, int, float)) and not isinstance(v, bool):
+                out[k] = mask_secret(str(v))
+            else:
+                out[k] = redact_object(v, force=force)
+        return out
+    if isinstance(obj, (list, tuple)):
+        return [redact_object(v, force=force) for v in obj]
+    if isinstance(obj, str):
+        return redact_sensitive_text(obj, force=force)
+    return obj
 
 
 # Substrings used to gate ``_PREFIX_RE`` execution. If none of these appear in

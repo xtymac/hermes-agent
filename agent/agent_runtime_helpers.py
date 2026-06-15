@@ -1218,23 +1218,23 @@ def dump_api_request_debug(
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
         dump_file = agent.logs_dir / f"request_dump_{agent.session_id}_{timestamp}.json"
 
-        # Redact secrets before persisting/printing. This dump captures the
-        # full request body (system prompt, tool defs, context-embedded
-        # values), and this path fires unconditionally on API errors — so it
-        # otherwise lands any context-embedded secret in cleartext on disk.
-        # Run the serialized dump through the same scrubber used for logs/tool
-        # output. Atomicity preserved via temp-file + Path.replace.
-        from agent.redact import redact_sensitive_text
-        _serialized = json.dumps(dump_payload, ensure_ascii=False, indent=2, default=str)
-        _redacted = redact_sensitive_text(_serialized, force=True)
-        _tmp = dump_file.with_name(dump_file.name + ".tmp")
-        _tmp.write_text(_redacted, encoding="utf-8")
-        _tmp.replace(dump_file)
+        # Redact secrets BEFORE serialization. This dump captures the full
+        # request body (system prompt, tool defs, context-embedded values),
+        # and this path fires unconditionally on API errors — so it otherwise
+        # lands any context-embedded secret in cleartext on disk. Redacting the
+        # structure (not the serialized string) scrubs JSON-shaped secrets
+        # inside prompt strings before json.dumps escapes their quotes, and
+        # masks values under known-sensitive keys regardless of value shape.
+        # The redacted object still goes through atomic_json_write, preserving
+        # its fsync / temp-cleanup / mode / atomic-replace guarantees.
+        from agent.redact import redact_object
+        safe_payload = redact_object(dump_payload)
+        atomic_json_write(dump_file, safe_payload, default=str)
 
         agent._vprint(f"{agent.log_prefix}🧾 Request debug dump written to: {dump_file}")
 
         if env_var_enabled("HERMES_DUMP_REQUEST_STDOUT"):
-            print(_redacted)
+            print(json.dumps(safe_payload, ensure_ascii=False, indent=2, default=str))
 
         return dump_file
     except Exception as dump_error:
